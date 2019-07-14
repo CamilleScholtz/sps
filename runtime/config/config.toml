@@ -1,0 +1,4 @@
+sinks = [
+	"alsa_output.usb-GFEC_ASSP_DigiHug_USB_Audio-01.analog-stereo",
+	"bluez_sink.FC_58_FA_6F_E7_32.a2dp_sink",
+]
