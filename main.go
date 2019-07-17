@@ -41,75 +41,39 @@ func getFallbackSink(c *pulseaudio.Client) (dbus.ObjectPath, error) {
 
 // getConfigSink returns the sink as defined in the config, the active parameter
 // determines if the active or the inactive sink should return.
-func getConfigSink(c *pulseaudio.Client, active bool) (dbus.ObjectPath, error) {
+func getConfigSink(c *pulseaudio.Client, active bool) (sinkInfo, error) {
 	fs, err := getFallbackSink(c)
 	if err != nil {
-		return "", err
-	}
-	fsn, err := c.Device(fs).String("Name")
-	if err != nil {
-		return "", err
+		return sinkInfo{}, err
 	}
 
 	sl, err := c.Core().ListPath("Sinks")
 	if err != nil {
-		return "", err
+		return sinkInfo{}, err
 	}
 
-	for _, csn := range config.Sinks {
+	for _, si := range config.Sinks {
 		if active {
-			if csn == fsn {
-				return fs, nil
+			if si.Sink == fs {
+				return si, nil
 			}
 		} else {
-			if csn != fsn {
+			if si.Sink != fs {
 				for _, s := range sl {
-					sn, err := c.Device(s).String("Name")
-					if err != nil {
-						return "", err
-					}
-
-					if csn == sn {
-						return s, nil
+					if si.Sink == s {
+						return si, nil
 					}
 				}
 			}
 		}
 	}
 
-	return "", fmt.Errorf("could not find sink from `config.toml`")
-}
-
-// getDSPSink returns the DPS sink, if the `d` parameter is empty it will return
-// without error.
-func getDSPSink(c *pulseaudio.Client, d string) (dbus.ObjectPath, error) {
-	if d == "" {
-		return "", nil
-	}
-
-	sl, err := c.Core().ListPath("Sinks")
-	if err != nil {
-		return "", err
-	}
-
-	for _, s := range sl {
-		sn, err := c.Device(s).String("Name")
-		if err != nil {
-			return "", err
-		}
-
-		if sn == d {
-			return s, nil
-		}
-	}
-
-	return "", fmt.Errorf("could not find sink `%s`", d)
+	return sinkInfo{}, fmt.Errorf("could not find sink from `config.toml`")
 }
 
 // switchSink switches the active sink to the given sink.
-func switchSink(c *pulseaudio.Client, s dbus.ObjectPath, ds dbus.
-	ObjectPath) error {
-	if err := c.Core().Set("FallbackSink", s); err != nil {
+func switchSink(c *pulseaudio.Client, si sinkInfo) error {
+	if err := c.Core().Set("FallbackSink", si.Sink); err != nil {
 		return err
 	}
 
@@ -119,24 +83,24 @@ func switchSink(c *pulseaudio.Client, s dbus.ObjectPath, ds dbus.
 	}
 
 	for _, ps := range psl {
-		sm := s
+		s := si.Sink
 
-		if ds > "" {
+		if si.DSP > "" {
 			psd, err := c.Stream(ps).String("Driver")
 			if err != nil {
 				return err
 			}
-			dd, err := c.Device(ds).String("Driver")
+			dd, err := c.Device(si.DSP).String("Driver")
 			if err != nil {
 				return err
 			}
 
 			if psd != dd {
-				sm = ds
+				s = si.DSP
 			}
 		}
 
-		if err := c.Stream(ps).Call("org.PulseAudio.Core1.Stream.Move", 0, sm).
+		if err := c.Stream(ps).Call("org.PulseAudio.Core1.Stream.Move", 0, s).
 			Err; err != nil {
 			return err
 		}
@@ -146,11 +110,6 @@ func switchSink(c *pulseaudio.Client, s dbus.ObjectPath, ds dbus.
 }
 
 func main() {
-	// Initialize the config.
-	if err := parseConfig(); err != nil {
-		log.Fatal(err)
-	}
-
 	// Define valid arguments.
 	argc := optparse.Bool("check", 'c', false)
 	argh := optparse.Bool("help", 'h', false)
@@ -179,48 +138,33 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// Initialize the config.
+	if err := parseConfig(c); err != nil {
+		log.Fatal(err)
+	}
+
 	// Returns the current fallback sink.
 	if *argc {
 		// Get the active sink.
-		s, err := getConfigSink(c, true)
+		si, err := getConfigSink(c, true)
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		// Get sink properties, we need this for the label.
-		pl, err := c.Device(s).MapString("PropertyList")
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		fmt.Printf("Now playing via %s.\n", color.HiYellowString(
-			pl["sps.label"]))
+		fmt.Printf("Now playing via %s.\n", color.HiYellowString(si.Label))
 		return
 	}
 
 	// Get what sink we should switch to.
-	s, err := getConfigSink(c, false)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// Get sink properties, we need this for the label and possible DSP.
-	pl, err := c.Device(s).MapString("PropertyList")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// Get the DSP sink (if there is one).
-	ds, err := getDSPSink(c, pl["sps.dsp"])
+	si, err := getConfigSink(c, false)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	// Move to previously determined sink(s).
-	if err := switchSink(c, s, ds); err != nil {
+	if err := switchSink(c, si); err != nil {
 		log.Fatal(err)
 	}
 
-	fmt.Printf("Now playing via %s.\n", color.HiYellowString(
-		pl["sps.label"]))
+	fmt.Printf("Now playing via %s.\n", color.HiYellowString(si.Label))
 }
